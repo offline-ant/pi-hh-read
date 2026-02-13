@@ -46,7 +46,9 @@ const schema = Type.Object({
 		Type.Number({
 			description:
 				"Line number to start searching from (1-indexed). " +
-				"The first hash match at or after this line is used. Required when targeting duplicate hashes.",
+				"The first hash match at or after this line is used. " +
+				"MUST match the offset used in the read() call that produced the hashes. " +
+				"If you read with offset, you must pass the same offset here.",
 		}),
 	),
 	content: Type.Optional(
@@ -103,7 +105,8 @@ export default function (pi: ExtensionAPI) {
 			"To replace: provide path, hash_start, hash_stop, and content. " +
 			"To delete: provide path, hash_start (and optionally hash_stop), omit content. " +
 			"Hashes always refer to the first match at or after offset. " +
-			"Provide offset when targeting lines with duplicate hashes (e.g. `}`, repeated patterns).",
+			"IMPORTANT: If you read the file with offset (e.g. read({offset: 50})), you MUST pass the same offset to change_file. " +
+			"Without offset, hashes resolve from line 1 and may match the wrong occurrence.",
 		parameters: schema,
 		async execute(_id, params: Params, signal, _onUpdate, ctx) {
 			const { path: filePath, hash_start, hash_stop, offset } = params;
