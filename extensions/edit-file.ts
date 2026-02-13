@@ -139,12 +139,12 @@ export default function (pi: ExtensionAPI) {
 			// --- Edit (insert / replace / delete) ---
 			const mode = !content ? "delete" : lineStop != null ? "replace" : "insert";
 			const stop = String(lineStop ?? lineStart);
-			// Drop duplicate trailing line if its hash matches the boundary line
-			if (content) {
+			// Drop duplicate trailing line if its hash matches the line being inserted before.
+			// Only for insert mode — in replace mode the hash_stop line is removed, so matching is expected.
+			if (mode === "insert" && content) {
 				const contentLines = content.split("\n");
-				const boundaryIdx = mode === "insert" ? lineStart - 1 : (lineStop ?? lineStart);
-				if (contentLines.length > 0 && boundaryIdx < fileLines.length
-					&& lineHash(contentLines[contentLines.length - 1]) === lineHash(fileLines[boundaryIdx])) {
+				if (contentLines.length > 0
+					&& lineHash(contentLines[contentLines.length - 1]) === lineHash(fileLines[lineStart - 1])) {
 					contentLines.pop();
 					content = contentLines.join("\n");
 				}
