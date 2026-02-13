@@ -208,15 +208,16 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args: Params, theme: any) {
-			const display = args.path?.startsWith(os.homedir())
+			let display = args.path?.startsWith(os.homedir())
 				? `~${args.path.slice(os.homedir().length)}`
 				: (args.path || "...");
+			if (args.offset != null) display += `:${args.offset}`;
+
 			const range = args.hash_start
 				? args.hash_stop
 					? ` ${args.hash_start}..${args.hash_stop}`
 					: ` ${args.hash_start}`
 				: "";
-			const offsetTag = args.offset != null ? theme.fg("muted", ` @${args.offset}`) : "";
 
 			const mode = !args.hash_start ? "create"
 				: !args.content ? "delete"
@@ -224,8 +225,8 @@ export default function (pi: ExtensionAPI) {
 				: "insert";
 
 			let text = theme.fg("toolTitle", theme.bold("change_file "))
-				+ theme.fg("accent", display + range)
-				+ offsetTag
+				+ theme.fg("accent", display)
+				+ range
 				+ theme.fg("muted", ` [${mode}]`);
 
 			// Show content preview when content is provided (like the built-in write tool)
