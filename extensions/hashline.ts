@@ -36,7 +36,7 @@ export function lineHash(text: string): string {
  * Tag an array of lines with `<hash>|` prefixes.
  */
 export function tagLines(lines: string[]): string[] {
-	return lines.map((line) => `${lineHash(line)}|${line}`);
+	return lines.map((line) => line.length === 0 ? "  |" : `${lineHash(line)}|${line}`);
 }
 
 /**

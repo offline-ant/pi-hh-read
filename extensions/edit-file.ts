@@ -75,12 +75,12 @@ const EDIT_SCRIPT = [
 	'  sed -i "${START},${STOP}d" "$FILE"',
 	'elif [ "$MODE" = "insert" ]; then',
 	'  head -n "$((START - 1))" "$FILE" > "$TMP2"',
-	"  printf '%s\\n' \"$CONTENT\" >> \"$TMP2\"",
+	"  printf '%s' \"$CONTENT\" >> \"$TMP2\"",
 	'  tail -n "+$START" "$FILE" >> "$TMP2"',
 	'  cp "$TMP2" "$FILE"',
 	"else",
 	'  head -n "$((START - 1))" "$FILE" > "$TMP2"',
-	"  printf '%s\\n' \"$CONTENT\" >> \"$TMP2\"",
+	"  printf '%s' \"$CONTENT\" >> \"$TMP2\"",
 	'  tail -n "+$((STOP + 1))" "$FILE" >> "$TMP2"',
 	'  cp "$TMP2" "$FILE"',
 	"fi",
@@ -138,10 +138,12 @@ export default function (pi: ExtensionAPI) {
 			// --- Edit (insert / replace / delete) ---
 			const mode = !content ? "delete" : lineStop != null ? "replace" : "insert";
 			const stop = String(lineStop ?? lineStart);
+			// Ensure content ends with a newline so printf '%s' produces complete lines
+			const normalizedContent = content && !content.endsWith("\n") ? content + "\n" : (content ?? "");
 
 			const res = await pi.exec(
 				"bash",
-				["-c", EDIT_SCRIPT, "--", filePath, mode, content ?? "", String(lineStart), stop],
+				["-c", EDIT_SCRIPT, "--", filePath, mode, normalizedContent, String(lineStart), stop],
 				execOpts,
 			);
 			if (res.code !== 0) throw new Error(res.stderr.trim() || "change_file failed");
