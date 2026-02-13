@@ -8,12 +8,15 @@ cutting token usage.
 
 ## How it works
 
-When the model reads a file, every line is prefixed with a 2-char base-62
-content hash: `<hash>|<content>`. These hashes serve as stable, verifiable
-anchors. When editing via `change_file`, the model references lines by hash
-instead of reproducing content or guessing line numbers. Hashes are resolved to
-line numbers at edit time and validated against the current file content. Stale
-or missing hashes are rejected before any edit occurs.
+When the model reads a file with `change_file: true`, every line is prefixed
+with a 2-char base-62 content hash: `<hash>|<content>`. Only the **first
+occurrence** of each hash is shown — subsequent lines with the same hash display
+`  |<content>` instead. This eliminates ambiguity by construction: every visible
+hash uniquely identifies a line.
+
+When editing via `change_file`, the model references lines by hash. Hashes
+always resolve to the first occurrence in the file. Stale or missing hashes are
+rejected before any edit occurs.
 
 ## Extensions
 
@@ -21,7 +24,9 @@ or missing hashes are rejected before any edit occurs.
 
 Overrides the built-in `read` tool. For text files, every line is prefixed with
 `<hash>|` where hash is a 2-char base-62 digest (FNV-1a) of the line content.
-Images pass through unchanged.
+Duplicate hashes (including repeated empty lines, closing braces, etc.) are
+suppressed after the first occurrence. Deduplication is computed from the start
+of the file, even for ranged reads with `offset`. Images pass through unchanged.
 
 Parameters:
 - `path` — File to read (relative or absolute)
@@ -41,9 +46,8 @@ output.
 | Replace | `path`, `hash_start`, `hash_stop`, `content` | Replaces the hash range (inclusive) |
 | Delete | `path`, `hash_start` (optional `hash_stop`) | Deletes the line or range |
 
-**Duplicate disambiguation:** When a hash matches multiple lines (e.g. `}` or
-blank lines), pass `context` with a nearby unique hash. The tool picks the
-duplicate closest to that anchor.
+Hashes always refer to the first occurrence of a line. Lines with duplicate
+hashes (shown as `  |`) cannot be directly referenced.
 
 ### Tweaks (`tweaks.ts`)
 
@@ -55,8 +59,9 @@ Session-level adjustments:
 
 Shared module (not an extension). Provides:
 - `lineHash(text)` — FNV-1a to 2-char base-62 (3844 values)
-- `tagLines(lines)` — prefix lines with `<hash>|`
-- `resolveHash(fileLines, hash, context?)` — hash to line number with disambiguation
+- `tagLines(lines, seenHashes?)` — prefix lines with `<hash>|`, deduplicating after first occurrence
+- `buildSeenHashes(lines, count)` — build seen-set from lines before a range (for ranged reads)
+- `resolveHash(fileLines, hash)` — hash to line number (always first occurrence)
 
 ## Installation
 

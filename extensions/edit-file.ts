@@ -22,7 +22,6 @@ interface Params {
 	path: string;
 	hash_start?: string;
 	hash_stop?: string;
-	context?: string;
 	content?: string;
 }
 
@@ -40,13 +39,6 @@ const schema = Type.Object({
 			description:
 				"Hash of the last line in the range to replace/delete (inclusive). " +
 				"If omitted with hash_start, inserts before that line.",
-		}),
-	),
-	context: Type.Optional(
-		Type.String({
-			description:
-				"A nearby unique hash to disambiguate when hash_start or hash_stop match multiple lines " +
-				"(i.e. duplicate/identical lines). The closest match to this anchor is chosen.",
 		}),
 	),
 	content: Type.Optional(
@@ -102,11 +94,10 @@ export default function (pi: ExtensionAPI) {
 			"To insert: provide path, hash_start, and content (inserts before the hashed line). " +
 			"To replace: provide path, hash_start, hash_stop, and content. " +
 			"To delete: provide path, hash_start (and optionally hash_stop), omit content. " +
-			"If a hash matches multiple lines (duplicates), provide context with a nearby unique hash to disambiguate.",
+			"Hashes always refer to the first occurrence of a line. Duplicate hashes (shown as `  |`) cannot be directly referenced.",
 		parameters: schema,
-
 		async execute(_id, params: Params, signal, _onUpdate, ctx) {
-			const { path: filePath, hash_start, hash_stop, context: ctxHash } = params;
+			const { path: filePath, hash_start, hash_stop } = params;
 			let content = params.content;
 			const execOpts = { ...EXEC_OPTS, signal, cwd: ctx.cwd };
 
@@ -126,8 +117,8 @@ export default function (pi: ExtensionAPI) {
 			const fileContent = await readFile(absPath, "utf-8");
 			const fileLines = fileContent.split("\n");
 
-			const lineStart = resolveHash(fileLines, hash_start, ctxHash);
-			const lineStop = hash_stop != null ? resolveHash(fileLines, hash_stop, ctxHash) : undefined;
+			const lineStart = resolveHash(fileLines, hash_start);
+			const lineStop = hash_stop != null ? resolveHash(fileLines, hash_stop) : undefined;
 
 			if (lineStop != null && lineStop < lineStart) {
 				throw new Error(
