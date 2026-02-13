@@ -2,9 +2,9 @@
  * Hashline — content-hashed line tags for read output and verified edits.
  *
  * When the model reads a file, every line gets a short tag: `<hash>|<content>`
- * where hash is a 2-char base-62 digest of the line content. Only the first
- * occurrence of each hash is shown — subsequent duplicates display `  |` and
- * cannot be referenced in edits. This eliminates ambiguity by construction.
+ * where hash is a 2-char base-62 digest of the line content. Empty lines
+ * show `  |`. Duplicate hashes are shown — the `offset` parameter in
+ * change_file controls which occurrence is targeted.
  */
 
 // No-op extension export — this module is a utility library imported by
@@ -31,44 +31,39 @@ export function lineHash(text: string): string {
 
 /**
  * Tag an array of lines with `<hash>|` prefixes.
- * Only the first occurrence of each hash is shown; duplicates get `  |`.
- *
- * @param lines - The lines to tag
- * @param seenHashes - Optional pre-populated set of hashes already seen
- *   (e.g. from earlier lines in the file before a range). Mutated in place.
+ * Empty lines get `  |`. All non-empty lines get their hash shown.
  */
-export function tagLines(lines: string[], seenHashes?: Set<string>): string[] {
-	const seen = seenHashes ?? new Set<string>();
-	return lines.map((line) => {
-		const h = lineHash(line);
-		if (seen.has(h)) return `  |${line}`;
-		seen.add(h);
-		return `${h}|${line}`;
-	});
-}
-
-/**
- * Build a set of hashes seen in lines[0..count-1].
- * Used to pre-seed dedup for ranged reads.
- */
-export function buildSeenHashes(lines: string[], count: number): Set<string> {
-	const seen = new Set<string>();
-	for (let i = 0; i < count && i < lines.length; i++) {
-		seen.add(lineHash(lines[i]));
-	}
-	return seen;
+export function tagLines(lines: string[]): string[] {
+	return lines.map((line) => line.length === 0 ? "  |" : `${lineHash(line)}|${line}`);
 }
 
 /**
  * Resolve a hash to a 1-indexed line number in the given file lines.
- * Always returns the first occurrence. Since read only shows hashes for
- * first occurrences, each visible hash is unambiguous.
+ * Searches from `offset` (1-indexed, default 1). Returns the first match
+ * at or after the offset. If no offset is given and multiple matches exist,
+ * returns the first match but also sets `ambiguous` on the result.
  */
-export function resolveHash(fileLines: string[], hash: string): number {
-	for (let i = 0; i < fileLines.length; i++) {
-		if (lineHash(fileLines[i]) === hash) {
-			return i + 1; // 1-indexed
+export function resolveHash(
+	fileLines: string[],
+	hash: string,
+	offset?: number,
+): { line: number; ambiguous: boolean } {
+	const start = offset != null ? offset - 1 : 0;
+
+	let firstMatch: number | undefined;
+	let totalMatches = 0;
+
+	for (let i = start; i < fileLines.length; i++) {
+		if (fileLines[i].length > 0 && lineHash(fileLines[i]) === hash) {
+			if (firstMatch === undefined) firstMatch = i + 1;
+			totalMatches++;
 		}
 	}
-	throw new Error(`Hash "${hash}" not found in file. The file may have changed — re-read before editing.`);
+
+	if (firstMatch === undefined) {
+		throw new Error(`Hash "${hash}" not found in file${offset ? ` at or after line ${offset}` : ""}. The file may have changed — re-read before editing.`);
+	}
+
+	const ambiguous = offset == null && totalMatches > 1;
+	return { line: firstMatch, ambiguous };
 }

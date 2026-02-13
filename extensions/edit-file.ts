@@ -22,6 +22,7 @@ interface Params {
 	path: string;
 	hash_start?: string;
 	hash_stop?: string;
+	offset?: number;
 	content?: string;
 }
 
@@ -39,6 +40,13 @@ const schema = Type.Object({
 			description:
 				"Hash of the last line in the range to replace/delete (inclusive). " +
 				"If omitted with hash_start, inserts before that line.",
+		}),
+	),
+	offset: Type.Optional(
+		Type.Number({
+			description:
+				"Line number to start searching from (1-indexed). " +
+				"The first hash match at or after this line is used. Required when targeting duplicate hashes.",
 		}),
 	),
 	content: Type.Optional(
@@ -94,10 +102,11 @@ export default function (pi: ExtensionAPI) {
 			"To insert: provide path, hash_start, and content (inserts before the hashed line). " +
 			"To replace: provide path, hash_start, hash_stop, and content. " +
 			"To delete: provide path, hash_start (and optionally hash_stop), omit content. " +
-			"Hashes always refer to the first occurrence of a line. Duplicate hashes (shown as `  |`) cannot be directly referenced.",
+			"Hashes always refer to the first match at or after offset. " +
+			"Provide offset when targeting lines with duplicate hashes (e.g. `}`, repeated patterns).",
 		parameters: schema,
 		async execute(_id, params: Params, signal, _onUpdate, ctx) {
-			const { path: filePath, hash_start, hash_stop } = params;
+			const { path: filePath, hash_start, hash_stop, offset } = params;
 			let content = params.content;
 			const execOpts = { ...EXEC_OPTS, signal, cwd: ctx.cwd };
 
@@ -117,8 +126,23 @@ export default function (pi: ExtensionAPI) {
 			const fileContent = await readFile(absPath, "utf-8");
 			const fileLines = fileContent.split("\n");
 
-			const lineStart = resolveHash(fileLines, hash_start);
-			const lineStop = hash_stop != null ? resolveHash(fileLines, hash_stop) : undefined;
+			const warnings: string[] = [];
+
+			const startResult = resolveHash(fileLines, hash_start, offset);
+			const lineStart = startResult.line;
+			if (startResult.ambiguous) {
+				warnings.push(`Warning: hash "${hash_start}" matches multiple lines. Using first match (line ${lineStart}). Provide offset to target a specific occurrence.`);
+			}
+
+			let lineStop: number | undefined;
+			if (hash_stop != null) {
+				// For hash_stop, search from lineStart so it's always at or after hash_start
+				const stopResult = resolveHash(fileLines, hash_stop, offset ?? lineStart);
+				lineStop = stopResult.line;
+				if (stopResult.ambiguous) {
+					warnings.push(`Warning: hash "${hash_stop}" matches multiple lines. Using first match (line ${lineStop}). Provide offset to target a specific occurrence.`);
+				}
+			}
 
 			if (lineStop != null && lineStop < lineStart) {
 				throw new Error(
@@ -176,8 +200,9 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const msg = buildMessage(mode, filePath, hash_start, hash_stop) + newRange;
+			const fullMsg = warnings.length > 0 ? warnings.join("\n") + "\n" + msg : msg;
 			return {
-				content: [{ type: "text", text: msg }],
+				content: [{ type: "text", text: fullMsg }],
 				details: { diff, firstChangedLine } as EditToolDetails,
 			};
 		},

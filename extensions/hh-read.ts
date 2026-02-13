@@ -3,8 +3,7 @@
  *
  * Overrides the built-in `read` tool. For text files, every line is prefixed
  * with `<hash>|` where hash is a 2-char base-62 digest of the line content.
- * Only the first occurrence of each hash is tagged; duplicate lines show `  |`.
- * Dedup is computed from line 1 of the file, even for ranged reads.
+ * Empty lines show `  |`. Duplicate hashes are shown for all occurrences.
  *
  * Images pass through unchanged.
  */
@@ -20,7 +19,7 @@ import { Type } from "@sinclair/typebox";
 import { constants } from "node:fs";
 import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import * as path from "node:path";
-import { tagLines, buildSeenHashes } from "./hashline.js";
+import { tagLines } from "./hashline.js";
 
 const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".ico"]);
 
@@ -100,15 +99,8 @@ export default function (pi: ExtensionAPI) {
 				selectedLines = allLines.slice(startLine);
 			}
 
-			// Tag lines with hashline prefixes only when change_file is true.
-			// Dedup from file start: hashes seen before the selected range are suppressed.
-			let output: string[];
-			if (withHashes) {
-				const seen = startLine > 0 ? buildSeenHashes(allLines, startLine) : undefined;
-				output = tagLines(selectedLines, seen);
-			} else {
-				output = selectedLines;
-			}
+			// Tag lines with hashline prefixes only when change_file is true
+			const output = withHashes ? tagLines(selectedLines) : selectedLines;
 			const selectedContent = output.join("\n");
 
 			// Apply truncation
