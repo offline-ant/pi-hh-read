@@ -216,8 +216,17 @@ export default function (pi: ExtensionAPI) {
 					? ` ${args.hash_start}..${args.hash_stop}`
 					: ` ${args.hash_start}`
 				: "";
+			const offsetTag = args.offset != null ? theme.fg("muted", ` @${args.offset}`) : "";
 
-			let text = theme.fg("toolTitle", theme.bold("change_file ")) + theme.fg("accent", display + range);
+			const mode = !args.hash_start ? "create"
+				: !args.content ? "delete"
+				: args.hash_stop ? "replace"
+				: "insert";
+
+			let text = theme.fg("toolTitle", theme.bold("change_file "))
+				+ theme.fg("accent", display + range)
+				+ offsetTag
+				+ theme.fg("muted", ` [${mode}]`);
 
 			// Show content preview when content is provided (like the built-in write tool)
 			if (args.content) {
