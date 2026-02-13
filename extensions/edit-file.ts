@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI, EditToolDetails, ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
-import { renderDiff } from "@mariozechner/pi-coding-agent";
+import { renderDiff, highlightCode, getLanguageFromPath } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as os from "node:os";
@@ -106,7 +106,8 @@ export default function (pi: ExtensionAPI) {
 		parameters: schema,
 
 		async execute(_id, params: Params, signal, _onUpdate, ctx) {
-			const { path: filePath, hash_start, hash_stop, context: ctxHash, content } = params;
+			const { path: filePath, hash_start, hash_stop, context: ctxHash } = params;
+			let content = params.content;
 			const execOpts = { ...EXEC_OPTS, signal, cwd: ctx.cwd };
 
 			// --- Create / overwrite (no hashes) ---
@@ -138,6 +139,17 @@ export default function (pi: ExtensionAPI) {
 			// --- Edit (insert / replace / delete) ---
 			const mode = !content ? "delete" : lineStop != null ? "replace" : "insert";
 			const stop = String(lineStop ?? lineStart);
+			// Drop duplicate trailing line if its hash matches the boundary line
+			if (content) {
+				const contentLines = content.split("\n");
+				const boundaryIdx = mode === "insert" ? lineStart - 1 : (lineStop ?? lineStart);
+				if (contentLines.length > 0 && boundaryIdx < fileLines.length
+					&& lineHash(contentLines[contentLines.length - 1]) === lineHash(fileLines[boundaryIdx])) {
+					contentLines.pop();
+					content = contentLines.join("\n");
+				}
+			}
+
 			// Ensure content ends with a newline so printf '%s' produces complete lines
 			const normalizedContent = content && !content.endsWith("\n") ? content + "\n" : (content ?? "");
 
@@ -188,11 +200,30 @@ export default function (pi: ExtensionAPI) {
 					? ` ${args.hash_start}..${args.hash_stop}`
 					: ` ${args.hash_start}`
 				: "";
-			return new Text(
-				theme.fg("toolTitle", theme.bold("change_file ")) + theme.fg("accent", display + range),
-				0,
-				0,
-			);
+
+			let text = theme.fg("toolTitle", theme.bold("change_file ")) + theme.fg("accent", display + range);
+
+			// Show content preview when content is provided (like the built-in write tool)
+			if (args.content) {
+				const lang = args.path ? getLanguageFromPath(args.path) : undefined;
+				const lines = lang ? highlightCode(args.content, lang) : args.content.split("\n");
+				const totalLines = lines.length;
+				const maxLines = 10;
+				const displayLines = lines.slice(0, maxLines);
+				const remaining = lines.length - maxLines;
+
+				text += theme.fg("muted", ` (${totalLines} lines)`);
+				text += "\n\n" + displayLines
+					.map((line: string) => lang ? line.replace(/\t/g, "   ") : theme.fg("toolOutput", line.replace(/\t/g, "   ")))
+					.join("\n");
+				if (remaining > 0) {
+					text += theme.fg("muted", `\n... (${remaining} more lines)`);
+				}
+			} else if (args.hash_start) {
+				text += theme.fg("muted", " (delete)");
+			}
+
+			return new Text(text, 0, 0);
 		},
 
 		renderResult(result: AgentToolResult<EditToolDetails>, _opts: ToolRenderResultOptions, theme: any) {
@@ -210,7 +241,10 @@ export default function (pi: ExtensionAPI) {
 					0,
 				);
 			}
-			return new Text(renderDiff(result.details.diff), 0, 0);
+			const diffText = renderDiff(result.details.diff);
+			const summary = diffSummary(result.details.diff);
+			const summaryText = summary ? "\n" + theme.fg("muted", summary) : "";
+			return new Text(diffText + summaryText, 0, 0);
 		},
 	});
 }
@@ -228,6 +262,19 @@ function buildMessage(
 		return `Replaced ${hashStart}..${hashStop} in ${filePath}.`;
 	}
 	return `Inserted before ${hashStart} in ${filePath}.`;
+}
+
+/** Count +/- lines in the formatted diff to produce a compact summary. */
+function diffSummary(diff: string): string {
+	let added = 0, removed = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+")) added++;
+		else if (line.startsWith("-")) removed++;
+	}
+	const parts: string[] = [];
+	if (added > 0) parts.push(`${added} added`);
+	if (removed > 0) parts.push(`${removed} removed`);
+	return parts.length > 0 ? parts.join(", ") : "";
 }
 
 // --- Diff formatting: converts `diff -u` output into pi's edit-tool format ---
