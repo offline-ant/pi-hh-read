@@ -3,19 +3,20 @@
  *
  * Overrides the built-in `read` tool. For text files, every line is prefixed
  * with `<hash>|` where hash is a 2-char base-62 digest of the line content.
- * Empty lines show `  |`. Duplicate hashes are shown for all occurrences.
+ * Empty lines show `  |`. Duplicate hashes are suppressed — only the first
+ * occurrence of each hash is shown, so every visible hash uniquely identifies a line.
  *
  * Images pass through unchanged.
  */
 
-import type { ExtensionAPI, ReadToolDetails } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ReadToolDetails } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
 	truncateHead,
-} from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { constants } from "node:fs";
 import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import * as path from "node:path";
@@ -40,10 +41,10 @@ export default function (pi: ExtensionAPI) {
 		name: "read",
 		label: "Read",
 		description:
-			`Read the contents of a file. Set change_file: true to tag lines with 2-char content hashes: \`<hash>|<content>\`. ` +
-			`Use these hashes in change_file to reference lines for verified edits. ` +
-			`Supports images (jpg, png, gif, webp). ` +
-			`Output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB. Use offset/limit for large files.`,
+			`Read a file. Set change_file: true to tag lines with 2-char content hashes for use with change_file. ` +
+			`Do ONE read covering the ENTIRE range you plan to edit — do not stitch hashes from multiple reads. ` +
+			`Truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB; use offset/limit for large files. ` +
+			`Supports images (jpg, png, gif, webp).`,
 
 		parameters: readSchema,
 
@@ -52,6 +53,15 @@ export default function (pi: ExtensionAPI) {
 			const absolutePath = resolvePath(filePath, ctx.cwd);
 
 			await fsAccess(absolutePath, constants.R_OK);
+
+			// Warn if file is .gitignored (likely a build artifact)
+			let gitignoreWarning = "";
+			try {
+				const gi = await pi.exec("git", ["check-ignore", "-q", absolutePath], { cwd: ctx.cwd, timeout: 3000 });
+				if (gi.code === 0) {
+					gitignoreWarning = `⚠️  Warning: ${filePath} is .gitignored — it's likely a build artifact generated from source.\n\n`;
+				}
+			} catch { /* not in a git repo or git unavailable */ }
 
 			if (signal?.aborted) throw new Error("Operation aborted");
 
@@ -91,16 +101,20 @@ export default function (pi: ExtensionAPI) {
 
 			let selectedLines: string[];
 			let userLimitedLines: number | undefined;
+			let endLine: number;
 			if (limit !== undefined) {
-				const endLine = Math.min(startLine + limit, allLines.length);
+				endLine = Math.min(startLine + limit, allLines.length);
 				selectedLines = allLines.slice(startLine, endLine);
 				userLimitedLines = endLine - startLine;
 			} else {
+				endLine = allLines.length;
 				selectedLines = allLines.slice(startLine);
 			}
 
-			// Tag lines with hashline prefixes only when change_file is true
-			const output = withHashes ? tagLines(selectedLines) : selectedLines;
+			// Tag lines with hashline prefixes only when change_file is true.
+			// Pass the full file so deduplication considers all lines from the start,
+			// but only return tags for the displayed range.
+			const output = withHashes ? tagLines(allLines, startLine, endLine) : selectedLines;
 			const selectedContent = output.join("\n");
 
 			// Apply truncation
@@ -133,7 +147,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			return {
-				content: [{ type: "text" as const, text: outputText }],
+				content: [{ type: "text" as const, text: gitignoreWarning + outputText }],
 				details,
 			};
 		},

@@ -3,26 +3,28 @@
  *
  * Lines are referenced by their 2-char base-62 content hash (from hh_read output).
  * Before editing, hashes are resolved to line numbers and validated against the
- * current file content. If a hash is missing or ambiguous, the edit is rejected.
+ * current file content. If a hash is missing, the edit is rejected.
+ *
+ * Replace/delete ranges use [inclusive, exclusive) semantics: hash_start is the
+ * first line affected, hash_stop is the first line AFTER the range (not included).
  *
  * All content is passed via positional args to avoid shell/sed injection issues.
  */
 
-import type { ExtensionAPI, EditToolDetails, ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
-import { renderDiff, highlightCode, getLanguageFromPath } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import type { ExtensionAPI, EditToolDetails, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { renderDiff, highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import * as os from "node:os";
 import * as path from "node:path";
 import { readFile } from "node:fs/promises";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { lineHash, resolveHash } from "./hashline.js";
 
 interface Params {
 	path: string;
 	hash_start?: string;
 	hash_stop?: string;
-	offset?: number;
 	content?: string;
 }
 
@@ -38,17 +40,8 @@ const schema = Type.Object({
 	hash_stop: Type.Optional(
 		Type.String({
 			description:
-				"Hash of the last line in the range to replace/delete (inclusive). " +
+				"Hash of the first line AFTER the range to replace/delete (exclusive end). " +
 				"If omitted with hash_start, inserts before that line.",
-		}),
-	),
-	offset: Type.Optional(
-		Type.Number({
-			description:
-				"Line number to start searching from (1-indexed). " +
-				"The first hash match at or after this line is used. " +
-				"MUST match the offset used in the read() call that produced the hashes. " +
-				"If you read with offset, you must pass the same offset here.",
 		}),
 	),
 	content: Type.Optional(
@@ -66,7 +59,7 @@ printf '%s' "$2" > "$1"
 `;
 
 // Shell script for edit mode (insert, replace, delete).
-// $1 = file, $2 = mode, $3 = content, $4 = start line, $5 = stop line
+// $1 = file, $2 = mode, $3 = content, $4 = start line, $5 = stop line (inclusive)
 const EDIT_SCRIPT = [
 	"set -e",
 	'FILE="$1"; MODE="$2"; CONTENT="$3"; START="$4"; STOP="$5"',
@@ -102,14 +95,16 @@ export default function (pi: ExtensionAPI) {
 			"Lines are referenced by their 2-char content hash from the read tool output. " +
 			"To create/overwrite: provide path and content (omit hash_start). " +
 			"To insert: provide path, hash_start, and content (inserts before the hashed line). " +
-			"To replace: provide path, hash_start, hash_stop, and content. " +
-			"To delete: provide path, hash_start (and optionally hash_stop), omit content. " +
-			"Hashes always refer to the first match at or after offset. " +
-			"IMPORTANT: If you read the file with offset (e.g. read({offset: 50})), you MUST pass the same offset to change_file. " +
-			"Without offset, hashes resolve from line 1 and may match the wrong occurrence.",
+			"When inserting, provide ONLY the new lines — do not include the existing line you're inserting before (it is preserved automatically). To add new code and rearrange existing code, use replace mode instead. " +
+			"To replace: provide path, hash_start, hash_stop, and content. hash_stop is exclusive (first line AFTER the range). " +
+			"To delete: provide path, hash_start (and optionally hash_stop), omit content. hash_stop is exclusive. " +
+			"Hashes are unique per file — each hash maps to exactly one line (the first occurrence). " +
+			"IMPORTANT: All hashes used in a single change_file call MUST come from the SAME read call. " +
+			"Do NOT combine hashes from separate reads — hashes are only valid within the read that produced them. " +
+			"If you need to change a large range, do one read that covers the entire range first.",
 		parameters: schema,
 		async execute(_id, params: Params, signal, _onUpdate, ctx) {
-			const { path: filePath, hash_start, hash_stop, offset } = params;
+			const { path: filePath, hash_start, hash_stop } = params;
 			let content = params.content;
 			const execOpts = { ...EXEC_OPTS, signal, cwd: ctx.cwd };
 
@@ -131,40 +126,43 @@ export default function (pi: ExtensionAPI) {
 
 			const warnings: string[] = [];
 
-			const startResult = resolveHash(fileLines, hash_start, offset);
-			const lineStart = startResult.line;
-			if (startResult.ambiguous) {
-				warnings.push(`Warning: hash "${hash_start}" matches multiple lines. Using first match (line ${lineStart}). Provide offset to target a specific occurrence.`);
-			}
-
-			let lineStop: number | undefined;
-			if (hash_stop != null) {
-				// For hash_stop, search from lineStart so it's always at or after hash_start
-				const stopResult = resolveHash(fileLines, hash_stop, offset ?? lineStart);
-				lineStop = stopResult.line;
-				if (stopResult.ambiguous) {
-					warnings.push(`Warning: hash "${hash_stop}" matches multiple lines. Using first match (line ${lineStop}). Provide offset to target a specific occurrence.`);
+			// Warn if file is .gitignored (likely a build artifact)
+			try {
+				const gi = await pi.exec("git", ["check-ignore", "-q", absPath], { cwd: ctx.cwd, timeout: 3000 });
+				if (gi.code === 0) {
+					warnings.push(`Warning: ${filePath} is .gitignored — it's likely a build artifact generated from source.`);
 				}
-			}
+			} catch { /* not in a git repo or git unavailable */ }
 
-			if (lineStop != null && lineStop < lineStart) {
-				throw new Error(
-					`hash_stop "${hash_stop}" resolves to line ${lineStop}, which is before ` +
-					`hash_start "${hash_start}" at line ${lineStart}.`
-				);
+			const lineStart = resolveHash(fileLines, hash_start);
+
+			// hash_stop is exclusive: it points to the first line AFTER the range.
+			// Convert to inclusive for the shell script.
+			let lineStopInclusive: number | undefined;
+			if (hash_stop != null) {
+				const lineStopExclusive = resolveHash(fileLines, hash_stop);
+				if (lineStopExclusive <= lineStart) {
+					throw new Error(
+						`hash_stop "${hash_stop}" resolves to line ${lineStopExclusive}, which is at or before ` +
+						`hash_start "${hash_start}" at line ${lineStart}. hash_stop must be after hash_start.`
+					);
+				}
+				lineStopInclusive = lineStopExclusive - 1;
 			}
 
 			// --- Edit (insert / replace / delete) ---
-			const mode = !content ? "delete" : lineStop != null ? "replace" : "insert";
-			const stop = String(lineStop ?? lineStart);
-			// Drop duplicate trailing line if its hash matches the line being inserted before.
-			// Only for insert mode — in replace mode the hash_stop line is removed, so matching is expected.
+			const mode = !content ? "delete" : lineStopInclusive != null ? "replace" : "insert";
+			const stop = String(lineStopInclusive ?? lineStart);
+			// Drop duplicate trailing line if it matches the line being inserted before.
+			// Models often echo the target line as context at the end of content,
+			// possibly followed by a trailing newline. Compare actual text to avoid
+			// hash collisions (1-in-3844 false positive).
 			if (mode === "insert" && content) {
-				const contentLines = content.split("\n");
-				if (contentLines.length > 0
-					&& lineHash(contentLines[contentLines.length - 1]) === lineHash(fileLines[lineStart - 1])) {
-					contentLines.pop();
-					content = contentLines.join("\n");
+				const trimmed = content.replace(/\n*$/, "");
+				const lastNl = trimmed.lastIndexOf("\n");
+				const lastLine = lastNl === -1 ? trimmed : trimmed.slice(lastNl + 1);
+				if (lastLine === fileLines[lineStart - 1]) {
+					content = lastNl === -1 ? "" : trimmed.slice(0, lastNl);
 				}
 			}
 
@@ -214,7 +212,6 @@ export default function (pi: ExtensionAPI) {
 			let display = args.path?.startsWith(os.homedir())
 				? `~${args.path.slice(os.homedir().length)}`
 				: (args.path || "...");
-			if (args.offset != null) display += `:${args.offset}`;
 
 			const range = args.hash_start
 				? args.hash_stop
